@@ -1,7 +1,6 @@
 .git
 .gitea
 .github
-tests
 notebooks
 data
 fixtures
