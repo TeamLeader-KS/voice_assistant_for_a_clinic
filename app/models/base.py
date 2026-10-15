@@ -1,4 +1,4 @@
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import DeclarativeBase
 
 class Base(DeclarativeBase):
     pass
