@@ -22,6 +22,50 @@ from app.services.mis_client import MISClient, MISClientProtocol
 from app.services.mis_client_mock import MISClientMock
 
 
+def _seed_doctors_from_schedule(mock: MISClientMock) -> None:
+    """Засеять мок врачами из schedule.xlsx.
+
+    Берём уникальных врачей из листа «Слоты» и создаём для них
+    записи в справочнике MIS с числовыми ID (D001 → 1, D002 → 2, ...).
+    """
+    from pathlib import Path
+
+    from app.config import settings
+    from app.schemas.mis import Doctor
+    from app.services.schedule import ScheduleService
+
+    path = Path(settings.SCHEDULE_XLSX_PATH)
+    if not path.exists():
+        return  # нет файла — мок остаётся пустым, тесты всё равно работают
+
+    schedule = ScheduleService(str(path))
+    schedule.load()
+
+    # Собираем уникальных врачей: {excel_id: (full_name, specialty)}
+    doctors: dict[str, tuple[str, str]] = {}
+    for slot in schedule._slots:  # noqa: SLF001
+        if slot.doctor_excel_id not in doctors:
+            doctors[slot.doctor_excel_id] = (slot.doctor_name, slot.specialty)
+
+    # Создаём Doctor с числовым ID: "D001" → 1
+    mis_doctors: list[Doctor] = []
+    for excel_id, (full_name, specialty) in doctors.items():
+        try:
+            numeric_id = int(excel_id.lstrip("Dd"))
+        except ValueError:
+            continue
+        mis_doctors.append(
+            Doctor(
+                id=numeric_id,
+                full_name=full_name,
+                specialty=specialty,
+                is_active=True,
+            )
+        )
+
+    mock.seed_doctors(mis_doctors)
+
+    
 def create_mis_client(mode: str | None = None) -> MISClientProtocol:
     """Создать MIS-клиент по режиму.
 
@@ -37,7 +81,9 @@ def create_mis_client(mode: str | None = None) -> MISClientProtocol:
     resolved = (mode or settings.MIS_MODE).strip().lower()
 
     if resolved == "mock":
-        return MISClientMock()
+        mock = MISClientMock()
+        _seed_doctors_from_schedule(mock)
+    return mock
 
     if resolved == "real":
         if not settings.MIS_TOKEN:
