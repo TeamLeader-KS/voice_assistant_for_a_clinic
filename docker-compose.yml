@@ -9,6 +9,7 @@ services:
       - redis
     volumes:
       - ./app:/app/app
+      - ./data:/app/data
 
   db:
     image: postgres:16
