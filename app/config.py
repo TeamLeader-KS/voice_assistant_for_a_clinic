@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     MIS_BASE_URL: str = "https://crm-med-mock.dbi-testing.ru/api/v1"
     MIS_TOKEN: str = ""
 
+    # Расписание врачей
+    SCHEDULE_XLSX_PATH: str = "data/schedule.xlsx"
+    SCHEDULE_TODAY: str = "14.10.2026"  # пусто → берём datetime.now()
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
