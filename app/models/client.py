@@ -3,6 +3,7 @@ from datetime import date, datetime
 from sqlalchemy import String, Date, DateTime, Integer, CheckConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+
 class Client(Base):
     __tablename__ = "clients"
 
