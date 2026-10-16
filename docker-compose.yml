@@ -32,14 +32,16 @@ services:
   asterisk:
     image: andrius/asterisk:stable
     container_name: clinic-asterisk
+    restart: unless-stopped
     ports:
       - "5060:5060/udp"
       - "5060:5060/tcp"
-      - "10000-10100:10000-10100/udp"
+      - "10000-10099:10000-10099/udp"
     volumes:
       - ./asterisk-config:/etc/asterisk
-      - ./temp:/tmp
-    restart: unless-stopped
+      - ./asterisk-agi:/var/lib/asterisk/agi-bin
+    networks:
+      - default
 
 volumes:
   pgdata:
