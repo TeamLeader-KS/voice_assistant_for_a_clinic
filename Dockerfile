@@ -5,12 +5,14 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
 
 COPY app ./app
+COPY tests ./tests
 COPY alembic ./alembic
 COPY alembic.ini .
+COPY pyproject.toml .
 
 EXPOSE 8000
 
