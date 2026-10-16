@@ -34,6 +34,8 @@ class DialogResponseSchema(BaseModel):
     step: str
     visit_id: int | None = None
     booked: bool = False
+    escalated: bool = False
+    red_flag_category: str | None = None
 
 
 class ResetResponse(BaseModel):
@@ -64,6 +66,8 @@ async def dialog(request: DialogRequest) -> DialogResponseSchema:
         step=response.step,
         visit_id=response.visit_id,
         booked=response.booked,
+        escalated=response.escalated,
+        red_flag_category=response.red_flag_category,
     )
 
 
