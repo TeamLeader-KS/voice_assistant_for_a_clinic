@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   app:
     build: .
@@ -9,7 +11,7 @@ services:
       - redis
     volumes:
       - ./app:/app/app
-      - ./data:/app/data
+      - ./temp:/app/temp
 
   db:
     image: postgres:16
@@ -18,7 +20,7 @@ services:
       POSTGRES_PASSWORD: pass
       POSTGRES_DB: clinic
     ports:
-      - "5434:5432"
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -26,6 +28,18 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+
+  asterisk:
+    image: andrius/asterisk:stable
+    container_name: clinic-asterisk
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "10000-10100:10000-10100/udp"
+    volumes:
+      - ./asterisk-config:/etc/asterisk
+      - ./temp:/tmp
+    restart: unless-stopped
 
 volumes:
   pgdata:
