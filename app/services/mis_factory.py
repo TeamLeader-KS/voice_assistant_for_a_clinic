@@ -9,17 +9,51 @@
 
     client = create_mis_client()
     doctors = await client.list_doctors(specialty="терапевт")
-
-    # Если это MISClient (реальный) — не забыть закрыть:
-    if hasattr(client, "aclose"):
-        await client.aclose()
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.config import settings
+from app.schemas.mis import Doctor
 from app.services.mis_client import MISClient, MISClientProtocol
 from app.services.mis_client_mock import MISClientMock
+
+
+def create_mis_client(mode: str | None = None) -> MISClientProtocol:
+    """Создать MIS-клиент по режиму.
+
+    Аргументы:
+        mode: "mock" или "real". Если None — берётся settings.MIS_MODE.
+
+    Возвращает:
+        MISClientMock или MISClient.
+
+    Исключения:
+        ValueError: неизвестный режим или отсутствует токен в real-режиме.
+    """
+    resolved = (mode or settings.MIS_MODE).strip().lower()
+
+    if resolved == "mock":
+        client = MISClientMock()
+        _seed_doctors_from_schedule(client)
+        return client
+
+    if resolved == "real":
+        if not settings.MIS_TOKEN:
+            raise ValueError(
+                "MIS_MODE=real, но MIS_TOKEN пуст. "
+                "Укажи токен команды в .env или переключись на MIS_MODE=mock."
+            )
+        return MISClient(
+            base_url=settings.MIS_BASE_URL,
+            token=settings.MIS_TOKEN,
+        )
+
+    raise ValueError(
+        f"Неизвестный MIS_MODE: {resolved!r}. Ожидается 'mock' или 'real'."
+    )
 
 
 def _seed_doctors_from_schedule(mock: MISClientMock) -> None:
@@ -28,15 +62,12 @@ def _seed_doctors_from_schedule(mock: MISClientMock) -> None:
     Берём уникальных врачей из листа «Слоты» и создаём для них
     записи в справочнике MIS с числовыми ID (D001 → 1, D002 → 2, ...).
     """
-    from pathlib import Path
-
-    from app.config import settings
-    from app.schemas.mis import Doctor
-    from app.services.schedule import ScheduleService
-
     path = Path(settings.SCHEDULE_XLSX_PATH)
     if not path.exists():
-        return  # нет файла — мок остаётся пустым, тесты всё равно работают
+        return  # нет файла — мок остаётся пустым
+
+    # Импорт локальный, чтобы не тянуть openpyxl, если не нужно
+    from app.services.schedule import ScheduleService
 
     schedule = ScheduleService(str(path))
     schedule.load()
@@ -64,38 +95,3 @@ def _seed_doctors_from_schedule(mock: MISClientMock) -> None:
         )
 
     mock.seed_doctors(mis_doctors)
-
-    
-def create_mis_client(mode: str | None = None) -> MISClientProtocol:
-    """Создать MIS-клиент по режиму.
-
-    Аргументы:
-        mode: "mock" или "real". Если None — берётся settings.MIS_MODE.
-
-    Возвращает:
-        MISClientMock или MISClient.
-
-    Исключения:
-        ValueError: неизвестный режим.
-    """
-    resolved = (mode or settings.MIS_MODE).strip().lower()
-
-    if resolved == "mock":
-        mock = MISClientMock()
-        _seed_doctors_from_schedule(mock)
-    return mock
-
-    if resolved == "real":
-        if not settings.MIS_TOKEN:
-            raise ValueError(
-                "MIS_MODE=real, но MIS_TOKEN пуст. "
-                "Укажи токен команды в .env или переключись на MIS_MODE=mock."
-            )
-        return MISClient(
-            base_url=settings.MIS_BASE_URL,
-            token=settings.MIS_TOKEN,
-        )
-
-    raise ValueError(
-        f"Неизвестный MIS_MODE: {resolved!r}. Ожидается 'mock' или 'real'."
-    )
