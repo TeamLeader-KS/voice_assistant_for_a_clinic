@@ -345,3 +345,5 @@ docker compose ps
 | Правильный `requirements.txt` | корень проекта | `silero-tts==1.0.0` не существует; заменено на `silero` + CPU-torch |
 | `--extra-index-url .../whl/cpu` | `requirements.txt` | CPU-версия torch ~200 МБ вместо 2 ГБ CUDA |
 | Подключение `voice_routes.py` в `main.py` | `app/main.py` | Без этого `/synthesize` недоступен |
+
+---
