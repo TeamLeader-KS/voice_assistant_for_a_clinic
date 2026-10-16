@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 from fastapi import FastAPI
 
 from app.api import health, demo
@@ -16,6 +17,8 @@ app.include_router(demo.router)
 async def root():
     return {"status": "ok", "app": settings.APP_NAME}
 =======
+=======
+>>>>>>> origin/develop
 # # from fastapi import FastAPI
 # #
 # # from app.api import health, demo
