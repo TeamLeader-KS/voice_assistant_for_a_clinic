@@ -214,3 +214,4 @@ class AudioServer:
         self._warm_task = asyncio.create_task(asyncio.to_thread(self._warmup))
         async with server:
             await server.serve_forever()
+                
