@@ -1,105 +1,45 @@
-"""Диалоговый движок C-01 «Запись к терапевту» + C-14 «Экстренная ситуация».
-
-State machine:
-    greeting → ask_name → ask_specialty → offer_slots → confirm → booked
-    (в любой момент → escalated при красном флаге)
-
-Состояние диалога хранится в памяти (для MVP).
-На проде — Redis по ключу dialog:{call_id}.
-"""
+"""Сценарий C-01 «Запись на приём»."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
-
-from app.core.constants import RED_FLAG_CATEGORY_A
-from app.schemas.mis import ClientCreate, EscalationCreate, VisitCreate
+from app.schemas.mis import ClientCreate, VisitCreate
+from app.services.dialog.base import ScenarioProtocol
+from app.services.dialog.state import (
+    DialogResponse,
+    DialogState,
+    STEP_ASK_NAME,
+    STEP_ASK_SPECIALTY,
+    STEP_BOOKED,
+    STEP_CONFIRM,
+    STEP_GREETING,
+    STEP_OFFER_SLOTS,
+)
 from app.services.mis_client import MISClientProtocol
-from app.services.nlu import ParsedUtterance, parse
-from app.services.red_flags import RedFlag, detect as detect_red_flag
-from app.services.schedule import ScheduleService, Slot
-from app.services.transfer import build_emergency_card, build_urgent_card
+from app.services.nlu import ParsedUtterance
+from app.services.schedule import ScheduleService
 
 
-# Состояние диалога
-STEP_GREETING = "greeting"
-STEP_ASK_NAME = "ask_name"
-STEP_ASK_SPECIALTY = "ask_specialty"
-STEP_OFFER_SLOTS = "offer_slots"
-STEP_CONFIRM = "confirm"
-STEP_BOOKED = "booked"
-STEP_FALLBACK = "fallback"
-STEP_ESCALATED = "escalated"
-
-
-@dataclass
-class DialogState:
-    """Состояние диалога по одному звонку."""
-
-    call_id: str
-    step: str = STEP_GREETING
-    last_name: str | None = None
-    first_name: str | None = None
-    birth_date: str | None = None
-    specialty: str | None = None
-    offered_slots: list[Slot] = field(default_factory=list)
-    selected_slot: Slot | None = None
-    client_id: int | None = None
-    visit_id: int | None = None
-    # Поля для C-14 и общей работы
-    started_at: str = field(
-        default_factory=lambda: datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    )
-    full_name: str | None = None
-    red_flag: RedFlag | None = None
-
-
-@dataclass
-class DialogResponse:
-    """Ответ ассистента."""
-
-    reply: str
-    step: str
-    visit_id: int | None = None
-    booked: bool = False
-    escalated: bool = False
-    red_flag_category: str | None = None
-
-
-class DialogEngine:
-    """Диалоговый движок C-01 + C-14."""
+class BookingScenario(ScenarioProtocol):
+    name = "booking"
 
     def __init__(
         self,
         mis: MISClientProtocol,
         schedule: ScheduleService,
-        today: str,
     ) -> None:
         self._mis = mis
         self._schedule = schedule
-        self._today = today
-        self._states: dict[str, DialogState] = {}
 
-    def _get_state(self, call_id: str) -> DialogState:
-        if call_id not in self._states:
-            self._states[call_id] = DialogState(call_id=call_id)
-        return self._states[call_id]
-
-    async def handle(self, call_id: str, text: str) -> DialogResponse:
-        """Обработать реплику пациента."""
-        state = self._get_state(call_id)
-
-        # КРАСНЫЙ ФЛАГ: проверяем ПЕРВЫМ делом, до всего остального
-        red_flag = detect_red_flag(text)
-        if red_flag is not None:
-            return await self._handle_red_flag(state, red_flag, text)
-
-        parsed = parse(text, self._today)
-
-        # Первое обращение — всегда приветствие
+    async def handle(
+        self,
+        state: DialogState,
+        parsed: ParsedUtterance | None = None,
+        red_flag=None,
+        raw_text: str = "",
+    ) -> DialogResponse:
+        # Если шаг не задан — начинаем с приветствия
         if state.step == STEP_GREETING:
-            return await self._handle_greeting(state, parsed)
+            return self._handle_greeting(state)
 
         if state.step == STEP_ASK_NAME:
             return await self._handle_name(state, parsed)
@@ -108,10 +48,10 @@ class DialogEngine:
             return await self._handle_specialty(state, parsed)
 
         if state.step == STEP_OFFER_SLOTS:
-            return await self._handle_slot_choice(state, parsed, text)
+            return self._handle_slot_choice(state, raw_text)
 
         if state.step == STEP_CONFIRM:
-            return await self._handle_confirm(state, parsed, text)
+            return await self._handle_confirm(state, raw_text)
 
         if state.step == STEP_BOOKED:
             return DialogResponse(
@@ -120,86 +60,14 @@ class DialogEngine:
                 visit_id=state.visit_id,
             )
 
-        if state.step == STEP_ESCALATED:
-            return DialogResponse(
-                reply=(
-                    "Мы уже передали ваш вопрос сотруднику. "
-                    "Оставайтесь на линии, пожалуйста."
-                ),
-                step=state.step,
-                escalated=True,
-                red_flag_category=(
-                    state.red_flag.category if state.red_flag else None
-                ),
-            )
-
-        # Fallback — сбрасываем и начинаем заново
+        # Неизвестный шаг — сбрасываем
         state.step = STEP_GREETING
         return DialogResponse(
             reply="Извините, я не понял. Давайте начнём сначала. Чем могу помочь?",
             step=state.step,
         )
 
-    async def _handle_red_flag(
-        self,
-        state: DialogState,
-        red_flag: RedFlag,
-        raw_text: str,
-    ) -> DialogResponse:
-        """Обработать красный флаг: прервать сценарий, создать эскалацию."""
-        # Дособерём ФИО, если оно есть по частям
-        if not state.full_name and state.last_name and state.first_name:
-            state.full_name = f"{state.last_name} {state.first_name}"
-
-        # Собираем карточку перевода
-        if red_flag.category == RED_FLAG_CATEGORY_A:
-            card = build_emergency_card(
-                call_id=state.call_id,
-                started_at=state.started_at,
-                red_flag_group=red_flag.group,
-                matched=red_flag.matched,
-                patient_name=state.full_name,
-                patient_id=state.client_id,
-            )
-        else:
-            card = build_urgent_card(
-                call_id=state.call_id,
-                started_at=state.started_at,
-                red_flag_group=red_flag.group,
-                matched=red_flag.matched,
-                patient_name=state.full_name,
-                patient_id=state.client_id,
-            )
-
-        # Создаём эскалацию в MIS, если пациент уже идентифицирован
-        if state.client_id is not None:
-            try:
-                await self._mis.create_escalation(
-                    EscalationCreate(
-                        client_id=state.client_id,
-                        description=card.to_escalation_description(),
-                    )
-                )
-            except Exception:  # noqa: BLE001
-                # Если MIS не отвечает — не блокируем экстренную помощь
-                pass
-
-        # Переводим диалог в терминальное состояние
-        state.step = STEP_ESCALATED
-        state.red_flag = red_flag
-
-        return DialogResponse(
-            reply=red_flag.phrase,
-            step=state.step,
-            escalated=True,
-            red_flag_category=red_flag.category,
-        )
-
-   
-    # Шаги C-01
-    async def _handle_greeting(
-        self, state: DialogState, parsed: ParsedUtterance
-    ) -> DialogResponse:
+    def _handle_greeting(self, state: DialogState) -> DialogResponse:
         state.step = STEP_ASK_NAME
         return DialogResponse(
             reply=(
@@ -211,8 +79,11 @@ class DialogEngine:
         )
 
     async def _handle_name(
-        self, state: DialogState, parsed: ParsedUtterance
+        self, state: DialogState, parsed: ParsedUtterance | None
     ) -> DialogResponse:
+        if not parsed:
+            return DialogResponse(reply="Повторите, пожалуйста.", step=state.step)
+
         if not (parsed.last_name and parsed.first_name and parsed.birth_date):
             if parsed.last_name and not state.last_name:
                 state.last_name = parsed.last_name
@@ -223,8 +94,8 @@ class DialogEngine:
 
             return DialogResponse(
                 reply=(
-                    "Пожалуйста, назовите фамилию, имя и дату рождения "
-                    "в формате: Иванов Пётр, семнадцатое марта тысяча девятьсот восемьдесят пятого года."
+                    "Пожалуйста, назовите фамилию, имя и дату рождения. "
+                    "Например: Иванов Пётр, семнадцатое марта тысяча девятьсот восемьдесят пятого года."
                 ),
                 step=state.step,
             )
@@ -244,9 +115,9 @@ class DialogEngine:
         )
 
     async def _handle_specialty(
-        self, state: DialogState, parsed: ParsedUtterance
+        self, state: DialogState, parsed: ParsedUtterance | None
     ) -> DialogResponse:
-        if not parsed.specialty:
+        if not parsed or not parsed.specialty:
             return DialogResponse(
                 reply=(
                     "Уточните, пожалуйста, к какому специалисту вас записать. "
@@ -286,11 +157,8 @@ class DialogEngine:
             step=state.step,
         )
 
-    async def _handle_slot_choice(
-        self,
-        state: DialogState,
-        parsed: ParsedUtterance,
-        raw_text: str,
+    def _handle_slot_choice(
+        self, state: DialogState, raw_text: str
     ) -> DialogResponse:
         idx = self._extract_choice(raw_text, len(state.offered_slots))
         if idx is None:
@@ -313,10 +181,7 @@ class DialogEngine:
         )
 
     async def _handle_confirm(
-        self,
-        state: DialogState,
-        parsed: ParsedUtterance,
-        raw_text: str,
+        self, state: DialogState, raw_text: str
     ) -> DialogResponse:
         lowered = raw_text.lower()
         yes = any(
@@ -344,8 +209,6 @@ class DialogEngine:
                 step=state.step,
             )
 
-
-    # Создание записи
     async def _book(self, state: DialogState) -> DialogResponse:
         slot = state.selected_slot
         assert slot is not None
@@ -389,8 +252,6 @@ class DialogEngine:
             booked=True,
         )
 
-
-    # Помощники
     @staticmethod
     def _extract_choice(text: str, max_idx: int) -> int | None:
         """Найти номер варианта в тексте (1-based → 0-based)."""
