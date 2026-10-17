@@ -1,3 +1,5 @@
+#version: "3.9"
+
 services:
   app:
     build: .
@@ -9,6 +11,8 @@ services:
       - redis
     volumes:
       - ./app:/app/app
+      # - ./temp:/app/temp
+      - ./data:/app/data
 
   db:
     image: postgres:16
@@ -25,6 +29,20 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+
+  asterisk:
+    image: andrius/asterisk:stable
+    container_name: clinic-asterisk
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "10000-10099:10000-10099/udp"
+    volumes:
+      - ./asterisk-config:/etc/asterisk
+      - ./asterisk-agi:/var/lib/asterisk/agi-bin
+    networks:
+      - default
 
 volumes:
   pgdata:
