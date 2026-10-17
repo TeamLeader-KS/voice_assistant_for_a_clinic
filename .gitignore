@@ -134,3 +134,8 @@ Desktop.ini
 *.bak
 *.orig
 *.rej
+
+# Тестовые аудиофайлы
+*.wav
+*.mp3
+*.m4a

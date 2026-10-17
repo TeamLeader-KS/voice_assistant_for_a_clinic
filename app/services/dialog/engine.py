@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from app.services.dialog.scenarios.booking import BookingScenario
+from app.services.dialog.scenarios.cancel import CancelScenario
+from app.services.dialog.scenarios.check import CheckScenario
 from app.services.dialog.scenarios.emergency import EmergencyScenario
 from app.services.dialog.state import (
     DialogResponse,
     DialogState,
+    STEP_BOOKED,
     STEP_ESCALATED,
     STEP_GREETING,
 )
@@ -14,6 +17,7 @@ from app.services.mis_client import MISClientProtocol
 from app.services.nlu import parse
 from app.services.red_flags import detect as detect_red_flag
 from app.services.schedule import ScheduleService
+from app.services.dialog.scenarios.complaint import ComplaintScenario
 
 
 class DialogEngine:
@@ -30,15 +34,23 @@ class DialogEngine:
         self._today = today
         self._states: dict[str, DialogState] = {}
 
+        # Регистрация всех доступных сценариев
         self._scenarios = {
             "booking": BookingScenario(mis=mis, schedule=schedule),
             "emergency": EmergencyScenario(mis=mis),
+            "cancel": CancelScenario(mis=mis),
+            "check": CheckScenario(mis=mis),
+            "complaint": ComplaintScenario(mis=mis),
         }
 
     def _get_state(self, call_id: str) -> DialogState:
         if call_id not in self._states:
             self._states[call_id] = DialogState(call_id=call_id)
         return self._states[call_id]
+
+    def end_call(self, call_id: str) -> None:
+        """Очистить состояние после завершения звонка (вызывается из voice)."""
+        self._states.pop(call_id, None)
 
     async def handle(self, call_id: str, text: str) -> DialogResponse:
         """Обработать реплику пациента."""
@@ -49,30 +61,44 @@ class DialogEngine:
         if red_flag is not None:
             state.scenario = "emergency"
             return await self._scenarios["emergency"].handle(
-                state, red_flag=red_flag, raw_text=text
+                state, parsed=None, red_flag=red_flag, raw_text=text
             )
 
-        # 2. Терминальные состояния — ничего не делаем
-        if state.step == STEP_ESCALATED:
-            return DialogResponse(
-                reply=(
-                    "Мы уже передали ваш вопрос сотруднику. "
-                    "Оставайтесь на линии, пожалуйста."
-                ),
-                step=state.step,
-                escalated=True,
-                red_flag_category=(
-                    state.red_flag.category if state.red_flag else None
-                ),
-            )
+        # 2. Терминальные состояния (сброс при новом интенте)
+        if state.step in (STEP_BOOKED, STEP_ESCALATED):
+            parsed = await parse(text, self._today)
+            
+            # Если пациент хочет продолжить (новый интент)
+            if parsed.intent in ("book", "cancel", "check"):
+                state.scenario = None
+                state.step = STEP_GREETING
+                state.visit_id = None
+                state.selected_slot = None
+                state.offered_slots = []
+                state.client_id = None
+                state.last_name = None
+                state.first_name = None
+                state.birth_date = None
+                state.full_name = None
+            else:
+                return DialogResponse(
+                    reply="Хорошо. Всего доброго, будьте здоровы!",
+                    step=state.step,
+                )
+        else:
+            # 3. NLU (если диалог не терминальный)
+            parsed = await parse(text, self._today)
 
-        # 3. NLU
-        parsed = await parse(text, self._today)
-
-        # 4. Если сценарий ещё не выбран — по умолчанию booking
-        #    (в будущем здесь будет маршрутизация по intent)
+        # 4. Выбираем сценарий по интенту
         if state.scenario is None:
-            state.scenario = "booking"
+            if parsed.intent == "cancel":
+                state.scenario = "cancel"
+            elif parsed.intent == "check":
+                state.scenario = "check"
+            elif parsed.intent == "complaint":
+                state.scenario = "complaint"
+            else:
+                state.scenario = "booking"
             state.step = STEP_GREETING
 
         # 5. Делегируем в сценарий
