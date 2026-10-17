@@ -233,6 +233,15 @@ _MODEL_ID = "v4_ru"
 class SileroTTSWrapper:
     """Ленивая инициализация Silero TTS, кэш модели в памяти процесса."""
 
+    def synthesize_pcm(self, text: str) -> bytes:
+        """Текст → сырой PCM16 mono 8 кГц (то, что ждёт AudioSocket)."""
+        self._lazy_init()
+        audio = self._model.apply_tts(
+            text=_speakable(text), speaker=self.speaker, sample_rate=self.sample_rate
+        )
+        a = audio.squeeze().cpu().numpy() if isinstance(audio, torch.Tensor) else np.asarray(audio)
+        return (np.clip(a, -1, 1) * 32767).astype("<i2").tobytes()
+
     def __init__(
         self,
         language: str = _LANGUAGE,

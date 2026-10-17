@@ -15,6 +15,12 @@ from app.services.mis_client import MISClientProtocol
 from app.services.nlu import ParsedUtterance, parse
 from app.services.schedule import ScheduleService, Slot
 from app.schemas.mis import ClientCreate, VisitCreate
+from app.core.greetings import get_greeting
+from app.core.greetings import get_greeting_reply
+import re
+from app.services.nlu import ParsedUtterance, parse
+
+STEP_INTENT = "intent"
 
 
 # Состояние диалога
@@ -82,6 +88,9 @@ class DialogEngine:
         if state.step == STEP_GREETING:
             return await self._handle_greeting(state, parsed)
 
+        if state.step == STEP_INTENT:
+            return await self._handle_intent(state, parsed)
+
         if state.step == STEP_ASK_NAME:
             return await self._handle_name(state, parsed)
 
@@ -110,53 +119,75 @@ class DialogEngine:
 
     
     # Шаги
-    async def _handle_greeting(
-        self, state: DialogState, parsed: ParsedUtterance
-    ) -> DialogResponse:
-        state.step = STEP_ASK_NAME
+    async def _handle_greeting(self, state, parsed):
+        state.step = STEP_INTENT
+        return DialogResponse(reply=get_greeting_reply(), step=state.step)
 
-        # Если интент — не «book», всё равно ведём в C-01 (для MVP)
-        return DialogResponse(
-            reply=(
-                "Здравствуйте! Это голосовой ассистент поликлиники. "
-                "Я помогу записать вас на приём. "
-                "Назовите, пожалуйста, вашу фамилию, имя и дату рождения."
-            ),
-            step=state.step,
-        )
-
-    async def _handle_name(
-        self, state: DialogState, parsed: ParsedUtterance
-    ) -> DialogResponse:
-        if not (parsed.last_name and parsed.first_name and parsed.birth_date):
-            # Пробуем частично заполнить, если что-то распознали
-            if parsed.last_name and not state.last_name:
-                state.last_name = parsed.last_name
-            if parsed.first_name and not state.first_name:
-                state.first_name = parsed.first_name
-            if parsed.birth_date and not state.birth_date:
-                state.birth_date = parsed.birth_date
-
+    async def _handle_intent(self, state, parsed):
+        if parsed.specialty:
+            state.specialty = parsed.specialty      # запомнили из первой фразы
+        if parsed.intent in ("cancel", "check"):
+            # перенос/отмена/статус пока не реализованы → оператору
             return DialogResponse(
-                reply=(
-                    "Пожалуйста, назовите фамилию, имя и дату рождения "
-                    "в формате: Иванов Пётр, семнадцатое марта тысяча девятьсот восемьдесят пятого года."
-                ),
-                step=state.step,
+                reply="Это уточнит регистратор. Соединяю вас.",
+                step="transfer", transfer=True, result_code="ESCALATED", priority="P3",
             )
-
-        state.last_name = parsed.last_name
-        state.first_name = parsed.first_name
-        state.birth_date = parsed.birth_date
-        state.step = STEP_ASK_SPECIALTY
-
+        state.step = STEP_ASK_NAME
         return DialogResponse(
-            reply=(
-                f"{parsed.first_name} {parsed.last_name}, к какому врачу вас записать? "
-                f"Например, терапевт, педиатр, кардиолог."
-            ),
+            reply="Помогу записаться. Назовите фамилию, имя и дату рождения.",
             step=state.step,
         )
+
+    # async def _handle_name(
+    #     self, state: DialogState, parsed: ParsedUtterance
+    # ) -> DialogResponse:
+    #     if not (parsed.last_name and parsed.first_name and parsed.birth_date):
+    #         # Пробуем частично заполнить, если что-то распознали
+    #         if parsed.last_name and not state.last_name:
+    #             state.last_name = parsed.last_name
+    #         if parsed.first_name and not state.first_name:
+    #             state.first_name = parsed.first_name
+    #         if parsed.birth_date and not state.birth_date:
+    #             state.birth_date = parsed.birth_date
+    #
+    #         return DialogResponse(
+    #             reply=(
+    #                 "Пожалуйста, назовите фамилию, имя и дату рождения "
+    #                 "в формате: Иванов Пётр, семнадцатое марта тысяча девятьсот восемьдесят пятого года."
+    #             ),
+    #             step=state.step,
+    #         )
+    #
+    #     state.last_name = parsed.last_name
+    #     state.first_name = parsed.first_name
+    #     state.birth_date = parsed.birth_date
+    #     state.step = STEP_ASK_SPECIALTY
+    #
+    #     return DialogResponse(
+    #         reply=(
+    #             f"{parsed.first_name} {parsed.last_name}, к какому врачу вас записать? "
+    #             f"Например, терапевт, педиатр, кардиолог."
+    #         ),
+    #         step=state.step,
+    #     )
+    async def _handle_name(self, state, parsed):
+        state.last_name = parsed.last_name or state.last_name
+        state.first_name = parsed.first_name or state.first_name
+        state.birth_date = parsed.birth_date or state.birth_date
+
+        if not (state.last_name and state.first_name):
+            return DialogResponse(reply="Назовите, пожалуйста, фамилию и имя.", step=state.step)
+        if not state.birth_date:
+            return DialogResponse(reply="Назовите дату рождения: день, месяц и год.", step=state.step)
+
+        state.step = STEP_ASK_SPECIALTY
+        if state.specialty:        # врач уже назван в первой фразе, не переспрашиваем
+            return await self._handle_specialty(state, ParsedUtterance(specialty=state.specialty))
+        return DialogResponse(
+            reply=f"{state.first_name} {state.last_name}, к какому врачу вас записать?",
+            step=state.step,
+        )
+
 
     async def _handle_specialty(
         self, state: DialogState, parsed: ParsedUtterance
