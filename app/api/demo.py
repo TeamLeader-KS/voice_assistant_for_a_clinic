@@ -93,3 +93,17 @@ async def state(call_id: str) -> StateResponse:
         specialty=st.specialty,
         visit_id=st.visit_id,
     )
+
+
+@router.post("/nlu")
+async def nlu_debug(request: DialogRequest) -> dict:
+    """Отладка: что NLU извлёк из текста."""
+    from app.services.nlu import parse
+    parsed = await parse(request.text, settings.SCHEDULE_TODAY)
+    return {
+        "intent": parsed.intent,
+        "specialty": parsed.specialty,
+        "last_name": parsed.last_name,
+        "first_name": parsed.first_name,
+        "birth_date": parsed.birth_date,
+    }
