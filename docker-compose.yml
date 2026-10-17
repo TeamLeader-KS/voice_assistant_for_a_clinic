@@ -11,7 +11,8 @@ services:
       - redis
     volumes:
       - ./app:/app/app
-      - ./temp:/app/temp
+      # - ./temp:/app/temp
+      - ./data:/app/data
 
   db:
     image: postgres:16
@@ -20,7 +21,7 @@ services:
       POSTGRES_PASSWORD: pass
       POSTGRES_DB: clinic
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 

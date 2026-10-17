@@ -16,6 +16,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import json
+import os
+
+from openai import AsyncOpenAI
 
 
 # Специальности (из листа «Специальности» schedule.xlsx)
@@ -153,8 +157,72 @@ _RELATIVE_DAYS = {
 }
 
 
+# ─────────────────────────────────────────────────────────────
+# NLU через GigaChat
+# ─────────────────────────────────────────────────────────────
+
+_MODEL_NAME = "ai-sage/GigaChat3-10B-A1.8B"
+
+_llm_client = AsyncOpenAI(
+    base_url=os.getenv("OPENAI_BASE_URL"),
+    api_key=os.getenv("OPENAI_API_KEY"),
+    timeout=10.0,
+)
+
+_SYSTEM_PROMPT = (
+    "Ты — парсер реплик пациента поликлиники. "
+    "Извлеки из текста: intent (book/cancel/check/greeting/unknown), "
+    "specialty (терапевт, педиатр, лор, кардиолог, невролог, хирург, "
+    "офтальмолог, гинеколог, стоматолог, эндокринолог, уролог и т.д.), "
+    "last_name, first_name, birth_date (строго ДД.ММ.ГГГГ). "
+    "Понимай синонимы: «к ушам горлу носу» → лор, «сердечный врач» → кардиолог, "
+    "«зубной» → стоматолог. "
+    "Верни ТОЛЬКО валидный JSON без markdown и пояснений. "
+    'Пример: {"intent": "book", "specialty": "лор"}'
+)
+
+
+async def parse(text: str, today: str) -> ParsedUtterance:
+    """NLU: GigaChat для интентов/специальностей, regex для ФИО и дат."""
+    # 1. Всегда парсим regex — он надёжен для ФИО и дат
+    regex_result = _parse_with_regex(text, today)
+
+    # 2. Если нет ключа — возвращаем regex
+    if not os.getenv("OPENAI_API_KEY"):
+        return regex_result
+
+    # 3. Спрашиваем GigaChat — он лучше понимает синонимы
+    try:
+        response = await _llm_client.chat.completions.create(
+            model=_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            temperature=0.0,
+            max_tokens=200,
+        )
+        raw = (response.choices[0].message.content or "{}").strip()
+        raw = raw.removeprefix("```json").removeprefix("```")
+        raw = raw.removesuffix("```").strip()
+        data = json.loads(raw)
+
+        # 4. Мёржим: LLM приоритет для интента/специальности,
+        #    regex приоритет для ФИО и даты рождения
+        return ParsedUtterance(
+            intent=data.get("intent") or regex_result.intent,
+            specialty=data.get("specialty") or regex_result.specialty,
+            last_name=data.get("last_name") or regex_result.last_name,
+            first_name=data.get("first_name") or regex_result.first_name,
+            birth_date=data.get("birth_date") or regex_result.birth_date,
+            raw_text=text,
+        )
+    except Exception:  # noqa: BLE001
+        return regex_result
+    
+
 # Парсер
-def parse(text: str, today: str) -> ParsedUtterance:
+def _parse_with_regex(text: str, today: str) -> ParsedUtterance:
     """Разобрать реплику пациента.
 
     Аргументы:

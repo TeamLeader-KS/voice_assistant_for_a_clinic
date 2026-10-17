@@ -1,86 +1,45 @@
-"""Диалоговый движок C-01 «Запись к терапевту».
-
-State machine:
-    greeting → ask_name → ask_specialty → offer_slots → confirm → booked
-
-Состояние диалога хранится в памяти (для MVP).
-На проде — Redis по ключу dialog:{call_id}.
-"""
+"""Сценарий C-01 «Запись на приём»."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-from app.services.mis_client import MISClientProtocol
-from app.services.nlu import ParsedUtterance, parse
-from app.services.schedule import ScheduleService, Slot
 from app.schemas.mis import ClientCreate, VisitCreate
+from app.services.dialog.base import ScenarioProtocol
+from app.services.dialog.state import (
+    DialogResponse,
+    DialogState,
+    STEP_ASK_NAME,
+    STEP_ASK_SPECIALTY,
+    STEP_BOOKED,
+    STEP_CONFIRM,
+    STEP_GREETING,
+    STEP_OFFER_SLOTS,
+)
+from app.services.mis_client import MISClientProtocol
+from app.services.nlu import ParsedUtterance
+from app.services.schedule import ScheduleService
 
 
-# Состояние диалога
-STEP_GREETING = "greeting"
-STEP_ASK_NAME = "ask_name"
-STEP_ASK_SPECIALTY = "ask_specialty"
-STEP_OFFER_SLOTS = "offer_slots"
-STEP_CONFIRM = "confirm"
-STEP_BOOKED = "booked"
-STEP_FALLBACK = "fallback"
-
-
-@dataclass
-class DialogState:
-    """Состояние диалога по одному звонку."""
-
-    call_id: str
-    step: str = STEP_GREETING
-    last_name: str | None = None
-    first_name: str | None = None
-    birth_date: str | None = None
-    specialty: str | None = None
-    offered_slots: list[Slot] = field(default_factory=list)
-    selected_slot: Slot | None = None
-    client_id: int | None = None
-    visit_id: int | None = None
-
-
-@dataclass
-class DialogResponse:
-    """Ответ ассистента."""
-
-    reply: str
-    step: str
-    visit_id: int | None = None
-    booked: bool = False
-
-
-# Движок
-class DialogEngine:
-    """Диалоговый движок C-01."""
+class BookingScenario(ScenarioProtocol):
+    name = "booking"
 
     def __init__(
         self,
         mis: MISClientProtocol,
         schedule: ScheduleService,
-        today: str,
     ) -> None:
         self._mis = mis
         self._schedule = schedule
-        self._today = today
-        self._states: dict[str, DialogState] = {}
 
-    def _get_state(self, call_id: str) -> DialogState:
-        if call_id not in self._states:
-            self._states[call_id] = DialogState(call_id=call_id)
-        return self._states[call_id]
-
-    async def handle(self, call_id: str, text: str) -> DialogResponse:
-        """Обработать реплику пациента."""
-        state = self._get_state(call_id)
-        parsed = parse(text, self._today)
-
-        # Первое обращение — всегда приветствие
+    async def handle(
+        self,
+        state: DialogState,
+        parsed: ParsedUtterance | None = None,
+        red_flag=None,
+        raw_text: str = "",
+    ) -> DialogResponse:
+        # Если шаг не задан — начинаем с приветствия
         if state.step == STEP_GREETING:
-            return await self._handle_greeting(state, parsed)
+            return self._handle_greeting(state)
 
         if state.step == STEP_ASK_NAME:
             return await self._handle_name(state, parsed)
@@ -89,10 +48,10 @@ class DialogEngine:
             return await self._handle_specialty(state, parsed)
 
         if state.step == STEP_OFFER_SLOTS:
-            return await self._handle_slot_choice(state, parsed, text)
+            return self._handle_slot_choice(state, raw_text)
 
         if state.step == STEP_CONFIRM:
-            return await self._handle_confirm(state, parsed, text)
+            return await self._handle_confirm(state, raw_text)
 
         if state.step == STEP_BOOKED:
             return DialogResponse(
@@ -101,21 +60,15 @@ class DialogEngine:
                 visit_id=state.visit_id,
             )
 
-        # Fallback — сбрасываем и начинаем заново
+        # Неизвестный шаг — сбрасываем
         state.step = STEP_GREETING
         return DialogResponse(
             reply="Извините, я не понял. Давайте начнём сначала. Чем могу помочь?",
             step=state.step,
         )
 
-    
-    # Шаги
-    async def _handle_greeting(
-        self, state: DialogState, parsed: ParsedUtterance
-    ) -> DialogResponse:
+    def _handle_greeting(self, state: DialogState) -> DialogResponse:
         state.step = STEP_ASK_NAME
-
-        # Если интент — не «book», всё равно ведём в C-01 (для MVP)
         return DialogResponse(
             reply=(
                 "Здравствуйте! Это голосовой ассистент поликлиники. "
@@ -126,10 +79,12 @@ class DialogEngine:
         )
 
     async def _handle_name(
-        self, state: DialogState, parsed: ParsedUtterance
+        self, state: DialogState, parsed: ParsedUtterance | None
     ) -> DialogResponse:
+        if not parsed:
+            return DialogResponse(reply="Повторите, пожалуйста.", step=state.step)
+
         if not (parsed.last_name and parsed.first_name and parsed.birth_date):
-            # Пробуем частично заполнить, если что-то распознали
             if parsed.last_name and not state.last_name:
                 state.last_name = parsed.last_name
             if parsed.first_name and not state.first_name:
@@ -139,8 +94,8 @@ class DialogEngine:
 
             return DialogResponse(
                 reply=(
-                    "Пожалуйста, назовите фамилию, имя и дату рождения "
-                    "в формате: Иванов Пётр, семнадцатое марта тысяча девятьсот восемьдесят пятого года."
+                    "Пожалуйста, назовите фамилию, имя и дату рождения. "
+                    "Например: Иванов Пётр, семнадцатое марта тысяча девятьсот восемьдесят пятого года."
                 ),
                 step=state.step,
             )
@@ -148,6 +103,7 @@ class DialogEngine:
         state.last_name = parsed.last_name
         state.first_name = parsed.first_name
         state.birth_date = parsed.birth_date
+        state.full_name = f"{parsed.last_name} {parsed.first_name}"
         state.step = STEP_ASK_SPECIALTY
 
         return DialogResponse(
@@ -159,9 +115,9 @@ class DialogEngine:
         )
 
     async def _handle_specialty(
-        self, state: DialogState, parsed: ParsedUtterance
+        self, state: DialogState, parsed: ParsedUtterance | None
     ) -> DialogResponse:
-        if not parsed.specialty:
+        if not parsed or not parsed.specialty:
             return DialogResponse(
                 reply=(
                     "Уточните, пожалуйста, к какому специалисту вас записать. "
@@ -172,7 +128,6 @@ class DialogEngine:
 
         state.specialty = parsed.specialty
 
-        # Ищем свободные слоты
         slots = await self._schedule.get_free_slots(
             specialty=parsed.specialty, limit=3
         )
@@ -191,9 +146,7 @@ class DialogEngine:
 
         lines = []
         for i, slot in enumerate(slots, 1):
-            lines.append(
-                f"{i}. {slot.date} в {slot.start}, {slot.doctor_name}"
-            )
+            lines.append(f"{i}. {slot.date} в {slot.start}, {slot.doctor_name}")
         options = "\n".join(lines)
 
         return DialogResponse(
@@ -204,13 +157,9 @@ class DialogEngine:
             step=state.step,
         )
 
-    async def _handle_slot_choice(
-        self,
-        state: DialogState,
-        parsed: ParsedUtterance,
-        raw_text: str,
+    def _handle_slot_choice(
+        self, state: DialogState, raw_text: str
     ) -> DialogResponse:
-        # Ищем цифру в тексте
         idx = self._extract_choice(raw_text, len(state.offered_slots))
         if idx is None:
             return DialogResponse(
@@ -232,13 +181,13 @@ class DialogEngine:
         )
 
     async def _handle_confirm(
-        self,
-        state: DialogState,
-        parsed: ParsedUtterance,
-        raw_text: str,
+        self, state: DialogState, raw_text: str
     ) -> DialogResponse:
         lowered = raw_text.lower()
-        yes = any(w in lowered for w in ["да", "подтверждаю", "верно", "ага", "хорошо", "ок"])
+        yes = any(
+            w in lowered
+            for w in ["да", "подтверждаю", "верно", "ага", "хорошо", "ок"]
+        )
         no = any(w in lowered for w in ["нет", "не надо", "другое", "измени"])
 
         if no or not yes:
@@ -248,7 +197,6 @@ class DialogEngine:
                 step=state.step,
             )
 
-        # Создаём запись
         try:
             return await self._book(state)
         except Exception as exc:  # noqa: BLE001
@@ -261,14 +209,11 @@ class DialogEngine:
                 step=state.step,
             )
 
-
-    # Создание записи
     async def _book(self, state: DialogState) -> DialogResponse:
         slot = state.selected_slot
         assert slot is not None
         assert state.last_name and state.first_name and state.birth_date
 
-        # 1. Регистрируем/находим клиента
         client, _created = await self._mis.register_client(
             ClientCreate(
                 last_name=state.last_name,
@@ -278,12 +223,10 @@ class DialogEngine:
         )
         state.client_id = client.id
 
-        # 2. Сопоставляем врача из Excel с MIS
         doctor_id = await self._schedule.resolve_doctor_id(
             slot.doctor_excel_id, self._mis
         )
 
-        # 3. Создаём запись
         visit = await self._mis.create_visit(
             VisitCreate(
                 client_id=client.id,
@@ -293,7 +236,6 @@ class DialogEngine:
         )
         state.visit_id = visit.id
 
-        # 4. Помечаем слот занятым
         await self._schedule.book_slot(slot.doctor_excel_id, slot.scheduled_at)
 
         state.step = STEP_BOOKED
@@ -310,8 +252,6 @@ class DialogEngine:
             booked=True,
         )
 
-    
-    # Помощники
     @staticmethod
     def _extract_choice(text: str, max_idx: int) -> int | None:
         """Найти номер варианта в тексте (1-based → 0-based)."""
@@ -321,7 +261,6 @@ class DialogEngine:
                 n = int(token)
                 if 1 <= n <= max_idx:
                     return n - 1
-        # Словами
         word_to_num = {"первый": 1, "второй": 2, "третий": 3}
         lowered = text.lower()
         for word, n in word_to_num.items():
