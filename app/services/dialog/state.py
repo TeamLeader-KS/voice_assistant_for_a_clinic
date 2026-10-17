@@ -19,18 +19,18 @@ STEP_BOOKED = "booked"
 STEP_FALLBACK = "fallback"
 STEP_ESCALATED = "escalated"
 
-
 @dataclass
 class DialogState:
     """Состояние диалога по одному звонку."""
 
     call_id: str
-    scenario: str | None = None  # "booking" / "emergency"
+    scenario: str | None = None
     step: str = STEP_GREETING
 
     # Данные пациента
     last_name: str | None = None
     first_name: str | None = None
+    middle_name: str | None = None
     birth_date: str | None = None
     full_name: str | None = None
     client_id: int | None = None
@@ -41,10 +41,7 @@ class DialogState:
     selected_slot: Slot | None = None
     visit_id: int | None = None
 
-    # Служебные
-    started_at: str = field(
-        default_factory=lambda: datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    )
+    started_at: str = field(default_factory=lambda: datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
     red_flag: RedFlag | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
